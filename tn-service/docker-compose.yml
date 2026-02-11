@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: tn_postgres
+    environment:
+      POSTGRES_DB: tn
+      POSTGRES_USER: tn
+      POSTGRES_PASSWORD: tn_password
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: tn_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  api:
+    build: ./services/api
+    container_name: tn_api
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8000:8000"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    restart: unless-stopped
+
+  worker:
+    build: ./services/worker
+    container_name: tn_worker
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - photos:/tmp/photos
+    restart: unless-stopped
+
+  bot:
+    build: ./services/bot
+    container_name: tn_bot
+    env_file: .env
+    depends_on:
+      - api
+      - redis
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    command: python -m app.bot
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - photos:/tmp/photos
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  photos:
