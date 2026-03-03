@@ -48,10 +48,14 @@ def main():
             else: paths = [tg_download(fid) for fid in files]
             
             data = extract_batch(paths)
-            
-            # Сброс полей для принудительного ввода
-            data["carrier_name"] = {"value": None}
-            data["unloading_address"] = {"value": None} 
+
+            # Сохраняем оригинальные подсказки от OCR отдельно, чтобы в меню были только варианты от OpenAI.
+            data["ai_suggestions"] = {
+                "carrier_name": (data.get("carrier_name") or {}).get("value"),
+                "unloading_address": (data.get("unloading_address") or {}).get("value"),
+            }
+
+            # Статус водитель выбирает вручную; carrier/unloading оставляем как распознано OCR
             data["operation_type"] = {"value": None}
 
             doc_id = insert_received(chat_id, ",".join(files), ",".join(paths))
@@ -62,8 +66,8 @@ def main():
             # ОБНОВЛЕННАЯ КЛАВИАТУРА ПРИ ПЕРВОМ ОТВЕТЕ
             kb = {"inline_keyboard": [
                 [{"text": "🔄 Статус / Операция", "callback_data": f"menu_op:{doc_id}"}],
-                [{"text": "📍 Локация выгрузки", "callback_data": f"field:{doc_id}:unloading_address"}],
-                [{"text": "🚚 Перевозчик", "callback_data": f"field:{doc_id}:carrier_name"}],
+                [{"text": "📍 Локация выгрузки", "callback_data": f"menu_unload:{doc_id}"}],
+                [{"text": "🚚 Перевозчик", "callback_data": f"menu_carrier:{doc_id}"}],
                 [{"text": "✅ Подтвердить", "callback_data": f"ok:{doc_id}"}],
                 [{"text": "✏️ Исправить", "callback_data": f"edit:{doc_id}"}]
             ]}
