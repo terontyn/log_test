@@ -1,9 +1,12 @@
 import base64, json, os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
+from PIL import Image, ImageFilter, ImageStat
 from openai import OpenAI
 
-# Переходим на GPT-5.2 согласно обязательному обновлению OpenAI
 MODEL_VISION = os.getenv("OPENAI_OCR_MODEL", "gpt-5.2")
+MIN_ENTROPY = float(os.getenv("OCR_MIN_ENTROPY", "2.2"))
+MIN_EDGE_MEAN = float(os.getenv("OCR_MIN_EDGE_MEAN", "9.0"))
+MIN_WHITE_RATIO = float(os.getenv("OCR_MIN_WHITE_RATIO", "0.52"))
 
 USER_PROMPT = """Ты — логистический ИИ-ассистент, эксперт по распознаванию российских транспортных накладных (ТН) и товарно-транспортных накладных (ТТН).
 Внимательно изучи приложенные изображения. Твоя главная задача — точно определить "Грузоотправителя", не перепутав его с Поставщиком, Плательщиком или Грузополучателем.
@@ -32,26 +35,102 @@ USER_PROMPT = """Ты — логистический ИИ-ассистент, э
 }
 """
 
+
+def _signal_metrics(path: str) -> Tuple[float, float, float, int, int]:
+    with Image.open(path) as img:
+        gray = img.convert("L")
+        width, height = gray.size
+        entropy = gray.entropy()
+        edge_img = gray.filter(ImageFilter.FIND_EDGES)
+        edge_mean = ImageStat.Stat(edge_img).mean[0]
+        pixels = list(gray.getdata())
+        white_ratio = sum(1 for p in pixels if p >= 200) / max(len(pixels), 1)
+        return entropy, edge_mean, white_ratio, width, height
+
+
+def _is_likely_document(entropy: float, edge_mean: float, white_ratio: float) -> bool:
+    # Документ обычно: достаточно светлый фон + читаемые контуры текста/линий.
+    strict_rule = entropy >= MIN_ENTROPY and edge_mean >= MIN_EDGE_MEAN and white_ratio >= MIN_WHITE_RATIO
+    # Допуск для немного темных сканов, но с очень выраженной структурой линий/текста.
+    relaxed_rule = entropy >= (MIN_ENTROPY + 0.5) and edge_mean >= (MIN_EDGE_MEAN + 3.0) and white_ratio >= 0.42
+    return strict_rule or relaxed_rule
+
+
+def select_images_for_ocr(image_paths: List[str]) -> List[str]:
+    total_input = len(image_paths)
+    valid_paths = [p for p in image_paths if p and os.path.exists(p)]
+    invalid_count = total_input - len(valid_paths)
+
+    print(
+        "🧾 [OCR] Статистика входа: "
+        f"всего={total_input}, валидных={len(valid_paths)}, невалидных={invalid_count}, "
+        f"пороги entropy>={MIN_ENTROPY}, edges>={MIN_EDGE_MEAN}, white_ratio>={MIN_WHITE_RATIO}"
+    )
+
+    if not valid_paths:
+        return []
+
+    likely_doc = []
+    rejected = []
+
+    for p in valid_paths:
+        try:
+            entropy, edge_mean, white_ratio, w, h = _signal_metrics(p)
+            if _is_likely_document(entropy, edge_mean, white_ratio):
+                likely_doc.append((p, entropy, edge_mean, white_ratio, w, h))
+            else:
+                rejected.append((p, entropy, edge_mean, white_ratio, w, h))
+        except Exception:
+            rejected.append((p, 0.0, 0.0, 0.0, 0, 0))
+
+    if likely_doc:
+        print(f"🧾 [OCR] Отбор: отправим={len(likely_doc)}, пропустим={len(rejected)}, валидных={len(valid_paths)}")
+
+        print("📤 [OCR] Выбраны для OpenAI:")
+        for path, entropy, edge_mean, white_ratio, w, h in likely_doc:
+            print(f"  + {path} | {w}x{h} | entropy={entropy:.2f}, edges={edge_mean:.2f}, white={white_ratio:.2f}")
+
+        if rejected:
+            print("🧹 [OCR] Пропущены как недокументные:")
+            for path, entropy, edge_mean, white_ratio, w, h in rejected:
+                print(f"  - {path} | {w}x{h} | entropy={entropy:.2f}, edges={edge_mean:.2f}, white={white_ratio:.2f}")
+
+        return [p for p, _, _, _, _, _ in likely_doc]
+
+    print(
+        "⚠️ [OCR] Документные фото не определены по эвристике; fallback: отправляем все валидные "
+        f"({len(valid_paths)}/{total_input})."
+    )
+    return valid_paths
+
+
 def extract_batch(image_paths: List[str]) -> Dict[str, Any]:
-    print(f"🧠 [OCR] Инициализация модели {MODEL_VISION} для {len(image_paths)} изображений...")
+    selected_paths = select_images_for_ocr(image_paths)
+    if not selected_paths:
+        raise RuntimeError("Не найдено ни одного валидного изображения для OCR")
+
+    skipped = len(image_paths) - len(selected_paths)
+    print(f"🧠 [OCR] К отправке в OpenAI: {len(selected_paths)} шт.; пропущено: {skipped} шт.")
+    print(f"🧠 [OCR] Инициализация модели {MODEL_VISION}...")
+
     client = OpenAI()
     content = [{"type": "text", "text": USER_PROMPT}]
-    
-    for i, p in enumerate(image_paths, 1):
-        print(f"🧠 [OCR] Кодирование изображения {i}/{len(image_paths)} в Base64: {p}")
+
+    for i, p in enumerate(selected_paths, 1):
+        print(f"🧠 [OCR] Кодирование изображения {i}/{len(selected_paths)}: {p}")
         with open(p, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("ascii")
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-    
-    print(f"🧠 [OCR] Отправка запроса к серверам OpenAI API...")
+
+    print("🧠 [OCR] Отправка запроса к OpenAI API...")
     resp = client.chat.completions.create(
         model=MODEL_VISION,
         messages=[{"role": "user", "content": content}],
         response_format={"type": "json_object"},
-        temperature=0.0  # Убираем галлюцинации
+        temperature=0.0,
     )
-    
-    print(f"🧠 [OCR] Ответ успешно получен! Разбор JSON...")
+
+    print("🧠 [OCR] Ответ получен, разбор JSON...")
     result = json.loads(resp.choices[0].message.content)
     print(f"🧠 [OCR] Финальный вердикт ИИ:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
     return result
