@@ -16,6 +16,24 @@ CHAT_BUFFERS = {}
 EDIT_STATE = {}
 
 
+
+
+def _suggest_values(doc_id, field):
+    doc = get_doc(doc_id) or {}
+    ocr = doc.get("ocr_data") or {}
+    values = []
+    cur = ocr.get(field, {})
+    val = cur.get("value") if isinstance(cur, dict) else None
+    if val and str(val).strip() and str(val).strip() not in ("—", "None"):
+        values.append(str(val).strip())
+    seen = set()
+    out = []
+    for v in values:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
 def build_main_kb(doc_id, missing_carrier):
     kb = [
         [InlineKeyboardButton("🔄 Статус / Операция", callback_data=f"menu_op:{doc_id}")],
@@ -48,14 +66,16 @@ def build_op_kb(doc_id):
 
 
 def build_unload_kb(doc_id):
-    rows = [[InlineKeyboardButton(f"📍 {x}", callback_data=f"set_unload:{doc_id}:{x}")] for x in UNLOAD_SUGGESTIONS]
+    suggestions = _suggest_values(doc_id, "unloading_address")
+    rows = [[InlineKeyboardButton(f"📍 {x}", callback_data=f"set_unload:{doc_id}:{x}")] for x in suggestions]
     rows.append([InlineKeyboardButton("✍️ Свой вариант", callback_data=f"field:{doc_id}:unloading_address")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")])
     return InlineKeyboardMarkup(rows)
 
 
 def build_carrier_kb(doc_id):
-    rows = [[InlineKeyboardButton(f"🚚 {x}", callback_data=f"set_carrier:{doc_id}:{x}")] for x in CARRIER_SUGGESTIONS]
+    suggestions = _suggest_values(doc_id, "carrier_name")
+    rows = [[InlineKeyboardButton(f"🚚 {x}", callback_data=f"set_carrier:{doc_id}:{x}")] for x in suggestions]
     rows.append([InlineKeyboardButton("✍️ Свой вариант", callback_data=f"field:{doc_id}:carrier_name")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")])
     return InlineKeyboardMarkup(rows)

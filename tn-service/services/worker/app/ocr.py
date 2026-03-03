@@ -21,13 +21,16 @@ USER_PROMPT = """Ты — логистический ИИ-ассистент, э
 3. driver_name: ФИО водителя. Ищи в блоках "Водитель", "Груз к перевозке принял" или в разделе "Перевозчик".
 4. product_type: Наименование груза (например, "Дизельное топливо ЕВРО...", "Бензин моторный...").
 5. weight_total: Масса груза нетто СТРОГО В КИЛОГРАММАХ (целое число). Если в документе указано "24,705 т", это 24705 кг. Не используй десятичные дроби.
+6. carrier_name: Наименование перевозчика (если явно указано в документе).
+7. unloading_address: Адрес/локация выгрузки или грузополучателя (если указан в документе).
 
 Верни JSON строго по схеме:
 {
   "reasoning": "Кратко (1 предложение) объясни, в каком блоке ты нашел грузоотправителя, чтобы доказать свою точность",
   "loading_date": { "value": "DD.MM.YYYY" },
   "sender_address": { "value": "Название компании, Адрес" },
-  "carrier_name": { "value": null },
+  "carrier_name": { "value": "ИП Салихов" },
+  "unloading_address": { "value": "г. Омск, ул. ..." },
   "driver_name": { "value": "Фамилия И. О." },
   "product_type": { "value": "ДТ-Е-К5" },
   "weight_total": { "kg": 24705 },
@@ -132,5 +135,7 @@ def extract_batch(image_paths: List[str]) -> Dict[str, Any]:
 
     print("🧠 [OCR] Ответ получен, разбор JSON...")
     result = json.loads(resp.choices[0].message.content)
+    result.setdefault("carrier_name", {"value": None})
+    result.setdefault("unloading_address", {"value": None})
     print(f"🧠 [OCR] Финальный вердикт ИИ:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
     return result

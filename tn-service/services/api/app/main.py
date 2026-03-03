@@ -11,9 +11,6 @@ MAX_TOKEN = os.getenv("MAX_BOT_TOKEN")
 HEADERS = {"Authorization": f"{MAX_TOKEN}"}
 EDIT_STATE = {}
 
-UNLOAD_SUGGESTIONS = [x.strip() for x in os.getenv("UNLOAD_SUGGESTIONS", "Нефтебаза,АЗС,Склад клиента").split(",") if x.strip()]
-CARRIER_SUGGESTIONS = [x.strip() for x in os.getenv("CARRIER_SUGGESTIONS", "ИП,ООО,АО").split(",") if x.strip()]
-
 FILE_BUFFER = {}
 BUFFER_LOCK = threading.Lock()
 
@@ -123,6 +120,25 @@ def answer_max_callback(callback_id):
         pass
 
 
+
+
+def _suggest_values(doc_id, field):
+    doc = get_doc(doc_id) or {}
+    ocr = doc.get("ocr_data") or {}
+    values = []
+    cur = ocr.get(field, {})
+    val = cur.get("value") if isinstance(cur, dict) else None
+    if val and str(val).strip() and str(val).strip() not in ("—", "None"):
+        values.append(str(val).strip())
+    # уникализация
+    seen = set()
+    out = []
+    for v in values:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
 def build_main_kb(doc_id):
     return {"inline_keyboard": [
         [{"text": "🔄 Статус / Операция", "callback_data": f"menu_op:{doc_id}"}],
@@ -145,14 +161,16 @@ def build_op_kb(doc_id):
 
 
 def build_unload_kb(doc_id):
-    rows = [[{"text": f"📍 {x}", "callback_data": f"set_unload:{doc_id}:{x}"}] for x in UNLOAD_SUGGESTIONS]
+    suggestions = _suggest_values(doc_id, "unloading_address")
+    rows = [[{"text": f"📍 {x}", "callback_data": f"set_unload:{doc_id}:{x}"}] for x in suggestions]
     rows.append([{"text": "✍️ Свой вариант", "callback_data": f"field:{doc_id}:unloading_address"}])
     rows.append([{"text": "⬅️ Назад", "callback_data": f"back:{doc_id}"}])
     return {"inline_keyboard": rows}
 
 
 def build_carrier_kb(doc_id):
-    rows = [[{"text": f"🚚 {x}", "callback_data": f"set_carrier:{doc_id}:{x}"}] for x in CARRIER_SUGGESTIONS]
+    suggestions = _suggest_values(doc_id, "carrier_name")
+    rows = [[{"text": f"🚚 {x}", "callback_data": f"set_carrier:{doc_id}:{x}"}] for x in suggestions]
     rows.append([{"text": "✍️ Свой вариант", "callback_data": f"field:{doc_id}:carrier_name"}])
     rows.append([{"text": "⬅️ Назад", "callback_data": f"back:{doc_id}"}])
     return {"inline_keyboard": rows}
