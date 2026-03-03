@@ -1,7 +1,7 @@
 import os, json, logging, redis, asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from app.db import set_status, update_field, get_doc, add_operation_event
+from app.db import set_status, update_field, get_doc, add_operation_event, remove_last_operation_event, clear_operation_events
 from app.formatting import format_for_driver
 from app.bitrix_handlers import handle_bitrix_callback
 
@@ -36,6 +36,8 @@ def build_op_kb(doc_id):
             InlineKeyboardButton("⛽ Залился", callback_data=f"set_op:{doc_id}:filling"),
             InlineKeyboardButton("💧 Слился", callback_data=f"set_op:{doc_id}:draining"),
         ],
+        [InlineKeyboardButton("↩️ Удалить последний статус", callback_data=f"rm_last_op:{doc_id}")],
+        [InlineKeyboardButton("🧹 Очистить все статусы", callback_data=f"clear_ops:{doc_id}")],
         [InlineKeyboardButton("✍️ Свой статус", callback_data=f"field:{doc_id}:operation_type")],
         [InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")],
     ])
@@ -108,6 +110,24 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id,
             f"📅 Введите дату для статуса '{op}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
         )
+
+    elif data.startswith("rm_last_op:"):
+        doc_id = int(data.split(":")[1])
+        remove_last_operation_event(doc_id)
+        doc = get_doc(doc_id) or {}
+        ocr = doc.get("ocr_data") or {}
+        miss = not ocr.get("carrier_name", {}).get("value")
+        msg = format_for_driver(doc_id, ocr, True, "", 1.0)
+        await context.bot.send_message(chat_id, msg, reply_markup=build_main_kb(doc_id, miss))
+
+    elif data.startswith("clear_ops:"):
+        doc_id = int(data.split(":")[1])
+        clear_operation_events(doc_id)
+        doc = get_doc(doc_id) or {}
+        ocr = doc.get("ocr_data") or {}
+        miss = not ocr.get("carrier_name", {}).get("value")
+        msg = format_for_driver(doc_id, ocr, True, "", 1.0)
+        await context.bot.send_message(chat_id, msg, reply_markup=build_main_kb(doc_id, miss))
 
     elif data.startswith("edit:"):
         doc_id = int(data.split(":")[1])

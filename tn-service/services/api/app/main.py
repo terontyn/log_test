@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 import json, redis, os, requests, threading, time
-from app.db import get_doc, update_field, add_operation_event
+from app.db import get_doc, update_field, add_operation_event, remove_last_operation_event, clear_operation_events
 from app.formatting import format_for_driver
 
 app = FastAPI(title="TN Service Polling")
@@ -59,11 +59,18 @@ def _extract_mid(resp_json):
     for key in ("message_id", "mid"):
         if resp_json.get(key):
             return resp_json.get(key)
+
     result = resp_json.get("result")
     if isinstance(result, dict):
         if result.get("message_id"):
             return result.get("message_id")
         body = result.get("body")
+        if isinstance(body, dict) and body.get("mid"):
+            return body.get("mid")
+
+    message = resp_json.get("message")
+    if isinstance(message, dict):
+        body = message.get("body")
         if isinstance(body, dict) and body.get("mid"):
             return body.get("mid")
     return None
@@ -127,6 +134,8 @@ def build_op_kb(doc_id):
     return {"inline_keyboard": [
         [{"text": "⬆️ Загрузился", "callback_data": f"set_op:{doc_id}:loading"}, {"text": "⬇️ Выгрузился", "callback_data": f"set_op:{doc_id}:unloading"}],
         [{"text": "⛽ Залился", "callback_data": f"set_op:{doc_id}:filling"}, {"text": "💧 Слился", "callback_data": f"set_op:{doc_id}:draining"}],
+        [{"text": "↩️ Удалить последний статус", "callback_data": f"rm_last_op:{doc_id}"}],
+        [{"text": "🧹 Очистить все статусы", "callback_data": f"clear_ops:{doc_id}"}],
         [{"text": "✍️ Свой статус", "callback_data": f"field:{doc_id}:operation_type"}],
         [{"text": "⬅️ Назад", "callback_data": f"back:{doc_id}"}],
     ]}
@@ -159,6 +168,11 @@ def _set_edit_state(chat_id, doc_id, field, original_mid, prompt_text, pending_o
     }
 
 
+def _render_doc(doc_id, mid):
+    doc = get_doc(doc_id) or {}
+    edit_max_message(mid, format_for_driver(doc_id, doc.get("ocr_data", {}), True, "", 1.0), reply_markup=build_main_kb(doc_id))
+
+
 def handle_callback(chat_id, data, callback_id, mid):
     answer_max_callback(callback_id)
 
@@ -181,6 +195,16 @@ def handle_callback(chat_id, data, callback_id, mid):
             pending_op_type=op,
         )
 
+    elif data.startswith("rm_last_op:"):
+        doc_id = int(data.split(":")[1])
+        remove_last_operation_event(doc_id)
+        _render_doc(doc_id, mid)
+
+    elif data.startswith("clear_ops:"):
+        doc_id = int(data.split(":")[1])
+        clear_operation_events(doc_id)
+        _render_doc(doc_id, mid)
+
     elif data.startswith("edit:"):
         doc_id = int(data.split(":")[1])
         edit_max_message(mid, "🛠 **Выберите поле для исправления:**", reply_markup=build_edit_kb(doc_id))
@@ -199,8 +223,7 @@ def handle_callback(chat_id, data, callback_id, mid):
 
     elif data.startswith("back:"):
         doc_id = int(data.split(":")[1])
-        doc = get_doc(doc_id)
-        edit_max_message(mid, format_for_driver(doc_id, doc.get("ocr_data", {}), True, "", 1.0), reply_markup=build_main_kb(doc_id))
+        _render_doc(doc_id, mid)
 
     elif data.startswith("ok:"):
         doc_id = int(data.split(":")[1])

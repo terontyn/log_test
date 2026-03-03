@@ -61,6 +61,37 @@ def add_operation_event(doc_id, op_type, op_date):
     _save_ocr(doc_id, ocr)
 
 
+def remove_last_operation_event(doc_id):
+    doc = get_doc(doc_id)
+    ocr = doc.get("ocr_data") or {}
+    events = ocr.get("operation_events")
+    if not isinstance(events, list) or not events:
+        ocr.setdefault("operation_type", {})["value"] = None
+        ocr.setdefault("operation_date", {})["value"] = None
+        _save_ocr(doc_id, ocr)
+        return
+
+    events.pop()
+    ocr["operation_events"] = events
+    if events:
+        last = events[-1]
+        ocr.setdefault("operation_type", {})["value"] = last.get("type")
+        ocr.setdefault("operation_date", {})["value"] = last.get("date")
+    else:
+        ocr.setdefault("operation_type", {})["value"] = None
+        ocr.setdefault("operation_date", {})["value"] = None
+    _save_ocr(doc_id, ocr)
+
+
+def clear_operation_events(doc_id):
+    doc = get_doc(doc_id)
+    ocr = doc.get("ocr_data") or {}
+    ocr["operation_events"] = []
+    ocr.setdefault("operation_type", {})["value"] = None
+    ocr.setdefault("operation_date", {})["value"] = None
+    _save_ocr(doc_id, ocr)
+
+
 def set_status(doc_id, status):
     with db_connect() as conn:
         conn.execute("UPDATE transport_documents SET status=%s WHERE id=%s", (status, doc_id))
