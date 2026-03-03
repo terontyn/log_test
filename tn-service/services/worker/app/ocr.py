@@ -6,6 +6,7 @@ from openai import OpenAI
 MODEL_VISION = os.getenv("OPENAI_OCR_MODEL", "gpt-5.2")
 MIN_ENTROPY = float(os.getenv("OCR_MIN_ENTROPY", "2.2"))
 MIN_EDGE_MEAN = float(os.getenv("OCR_MIN_EDGE_MEAN", "9.0"))
+MIN_WHITE_RATIO = float(os.getenv("OCR_MIN_WHITE_RATIO", "0.52"))
 
 USER_PROMPT = """Ты — логистический ИИ-ассистент, эксперт по распознаванию российских транспортных накладных (ТН) и товарно-транспортных накладных (ТТН).
 Внимательно изучи приложенные изображения. Твоя главная задача — точно определить "Грузоотправителя", не перепутав его с Поставщиком, Плательщиком или Грузополучателем.
@@ -35,13 +36,24 @@ USER_PROMPT = """Ты — логистический ИИ-ассистент, э
 """
 
 
-def _signal_metrics(path: str) -> Tuple[float, float]:
+def _signal_metrics(path: str) -> Tuple[float, float, float, int, int]:
     with Image.open(path) as img:
         gray = img.convert("L")
+        width, height = gray.size
         entropy = gray.entropy()
         edge_img = gray.filter(ImageFilter.FIND_EDGES)
         edge_mean = ImageStat.Stat(edge_img).mean[0]
-        return entropy, edge_mean
+        pixels = list(gray.getdata())
+        white_ratio = sum(1 for p in pixels if p >= 200) / max(len(pixels), 1)
+        return entropy, edge_mean, white_ratio, width, height
+
+
+def _is_likely_document(entropy: float, edge_mean: float, white_ratio: float) -> bool:
+    # Документ обычно: достаточно светлый фон + читаемые контуры текста/линий.
+    strict_rule = entropy >= MIN_ENTROPY and edge_mean >= MIN_EDGE_MEAN and white_ratio >= MIN_WHITE_RATIO
+    # Допуск для немного темных сканов, но с очень выраженной структурой линий/текста.
+    relaxed_rule = entropy >= (MIN_ENTROPY + 0.5) and edge_mean >= (MIN_EDGE_MEAN + 3.0) and white_ratio >= 0.42
+    return strict_rule or relaxed_rule
 
 
 def select_images_for_ocr(image_paths: List[str]) -> List[str]:
@@ -50,8 +62,9 @@ def select_images_for_ocr(image_paths: List[str]) -> List[str]:
     invalid_count = total_input - len(valid_paths)
 
     print(
-        f"🧾 [OCR] Статистика входа: всего={total_input}, валидных={len(valid_paths)}, невалидных={invalid_count}, "
-        f"порог entropy>={MIN_ENTROPY}, edges>={MIN_EDGE_MEAN}"
+        "🧾 [OCR] Статистика входа: "
+        f"всего={total_input}, валидных={len(valid_paths)}, невалидных={invalid_count}, "
+        f"пороги entropy>={MIN_ENTROPY}, edges>={MIN_EDGE_MEAN}, white_ratio>={MIN_WHITE_RATIO}"
     )
 
     if not valid_paths:
@@ -62,24 +75,27 @@ def select_images_for_ocr(image_paths: List[str]) -> List[str]:
 
     for p in valid_paths:
         try:
-            entropy, edge_mean = _signal_metrics(p)
-            if entropy >= MIN_ENTROPY or edge_mean >= MIN_EDGE_MEAN:
-                likely_doc.append((p, entropy, edge_mean))
+            entropy, edge_mean, white_ratio, w, h = _signal_metrics(p)
+            if _is_likely_document(entropy, edge_mean, white_ratio):
+                likely_doc.append((p, entropy, edge_mean, white_ratio, w, h))
             else:
-                rejected.append((p, entropy, edge_mean))
+                rejected.append((p, entropy, edge_mean, white_ratio, w, h))
         except Exception:
-            rejected.append((p, 0.0, 0.0))
+            rejected.append((p, 0.0, 0.0, 0.0, 0, 0))
 
     if likely_doc:
-        print(
-            f"🧾 [OCR] Отбор: отправим={len(likely_doc)}, пропустим={len(rejected)}, "
-            f"валидных={len(valid_paths)}"
-        )
+        print(f"🧾 [OCR] Отбор: отправим={len(likely_doc)}, пропустим={len(rejected)}, валидных={len(valid_paths)}")
+
+        print("📤 [OCR] Выбраны для OpenAI:")
+        for path, entropy, edge_mean, white_ratio, w, h in likely_doc:
+            print(f"  + {path} | {w}x{h} | entropy={entropy:.2f}, edges={edge_mean:.2f}, white={white_ratio:.2f}")
+
         if rejected:
-            print("🧹 [OCR] Пропущены фото с низким текстовым сигналом:")
-            for path, entropy, edge_mean in rejected:
-                print(f"  - {path}: entropy={entropy:.2f}, edges={edge_mean:.2f}")
-        return [p for p, _, _ in likely_doc]
+            print("🧹 [OCR] Пропущены как недокументные:")
+            for path, entropy, edge_mean, white_ratio, w, h in rejected:
+                print(f"  - {path} | {w}x{h} | entropy={entropy:.2f}, edges={edge_mean:.2f}, white={white_ratio:.2f}")
+
+        return [p for p, _, _, _, _, _ in likely_doc]
 
     print(
         "⚠️ [OCR] Документные фото не определены по эвристике; fallback: отправляем все валидные "
