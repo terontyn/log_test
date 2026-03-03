@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 import json, redis, os, requests, threading, time
-from app.db import get_doc, update_field
+from app.db import get_doc, update_field, add_operation_event
 from app.formatting import format_for_driver
 
 app = FastAPI(title="TN Service Polling")
@@ -64,11 +64,6 @@ def _extract_mid(resp_json):
         if result.get("message_id"):
             return result.get("message_id")
         body = result.get("body")
-        if isinstance(body, dict) and body.get("mid"):
-            return body.get("mid")
-    message = resp_json.get("message")
-    if isinstance(message, dict):
-        body = message.get("body")
         if isinstance(body, dict) and body.get("mid"):
             return body.get("mid")
     return None
@@ -150,12 +145,18 @@ def build_edit_kb(doc_id):
     ]}
 
 
-def _set_edit_state(chat_id, doc_id, field, original_mid, prompt_text):
+def _set_edit_state(chat_id, doc_id, field, original_mid, prompt_text, pending_op_type=None):
     prev = EDIT_STATE.get(chat_id)
     if prev:
         delete_max_message(prev.get("prompt_mid"))
     prompt_mid = send_max_message(chat_id, prompt_text)
-    EDIT_STATE[chat_id] = {"doc_id": int(doc_id), "field": field, "original_mid": original_mid, "prompt_mid": prompt_mid}
+    EDIT_STATE[chat_id] = {
+        "doc_id": int(doc_id),
+        "field": field,
+        "original_mid": original_mid,
+        "prompt_mid": prompt_mid,
+        "pending_op_type": pending_op_type,
+    }
 
 
 def handle_callback(chat_id, data, callback_id, mid):
@@ -168,7 +169,6 @@ def handle_callback(chat_id, data, callback_id, mid):
     elif data.startswith("set_op:"):
         _, did, op = data.split(":")
         doc_id = int(did)
-        update_field(doc_id, "operation_type", op)
         doc = get_doc(doc_id) or {}
         ocr = doc.get("ocr_data") or {}
         default_date = ocr.get("loading_date", {}).get("value", "")
@@ -177,7 +177,8 @@ def handle_callback(chat_id, data, callback_id, mid):
             doc_id,
             "operation_date",
             mid,
-            f"📅 Введите дату статуса (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+            f"📅 Введите дату для статуса '{op}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+            pending_op_type=op,
         )
 
     elif data.startswith("edit:"):
@@ -205,7 +206,6 @@ def handle_callback(chat_id, data, callback_id, mid):
         doc_id = int(data.split(":")[1])
         doc = get_doc(doc_id)
         ocr = doc.get("ocr_data") or {}
-
         errors = []
         if not ocr.get("carrier_name", {}).get("value"):
             errors.append("Перевозчик")
@@ -233,6 +233,7 @@ def process_update(update):
 
     if update_type not in ["message_created", "bot_started"]:
         return
+
     msg_obj = update.get("message", {})
     chat_id = msg_obj.get("recipient", {}).get("chat_id") or update.get("chat_id")
     text = msg_obj.get("body", {}).get("text", "")
@@ -245,14 +246,34 @@ def process_update(update):
     if state and text and update_type != "bot_started":
         doc_id, field = state["doc_id"], state["field"]
         value = text.strip()
-        if field == "operation_date" and value in ("-", "—", ""):
+
+        if field == "operation_type":
             doc = get_doc(doc_id) or {}
-            value = (doc.get("ocr_data") or {}).get("loading_date", {}).get("value", "")
-        update_field(doc_id, field, value)
+            ocr = doc.get("ocr_data") or {}
+            default_date = ocr.get("loading_date", {}).get("value", "")
+            _set_edit_state(
+                chat_id,
+                doc_id,
+                "operation_date",
+                state.get("original_mid"),
+                f"📅 Введите дату для статуса '{value}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+                pending_op_type=value,
+            )
+            delete_max_message(msg_obj.get("body", {}).get("mid"))
+            return
+
+        if field == "operation_date":
+            if value in ("-", "—", ""):
+                doc = get_doc(doc_id) or {}
+                value = (doc.get("ocr_data") or {}).get("loading_date", {}).get("value", "")
+            latest_doc = get_doc(doc_id) or {}
+            op_type = state.get("pending_op_type") or (latest_doc.get("ocr_data") or {}).get("operation_type", {}).get("value")
+            add_operation_event(doc_id, op_type, value)
+        else:
+            update_field(doc_id, field, value)
 
         doc = get_doc(doc_id)
         msg_text = format_for_driver(doc_id, doc.get("ocr_data", {}), True, "", 1.0)
-
         if state.get("original_mid"):
             edit_max_message(state["original_mid"], msg_text, reply_markup=build_main_kb(doc_id))
         delete_max_message(state.get("prompt_mid"))

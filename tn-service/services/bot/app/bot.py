@@ -1,7 +1,7 @@
 import os, json, logging, redis, asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from app.db import set_status, update_field, get_doc
+from app.db import set_status, update_field, get_doc, add_operation_event
 from app.formatting import format_for_driver
 from app.bitrix_handlers import handle_bitrix_callback
 
@@ -100,14 +100,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("set_op:"):
         _, did, op = data.split(":")
         doc_id = int(did)
-        update_field(doc_id, "operation_type", op)
         doc = get_doc(doc_id) or {}
         ocr = doc.get("ocr_data") or {}
         default_date = ocr.get("loading_date", {}).get("value", "")
-        EDIT_STATE[chat_id] = {"doc_id": doc_id, "field": "operation_date"}
+        EDIT_STATE[chat_id] = {"doc_id": doc_id, "field": "operation_date", "pending_op_type": op}
         await context.bot.send_message(
             chat_id,
-            f"📅 Введите дату статуса (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+            f"📅 Введите дату для статуса '{op}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
         )
 
     elif data.startswith("edit:"):
@@ -148,10 +147,29 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     doc_id, field = state["doc_id"], state["field"]
     value = update.message.text.strip()
-    if field == "operation_date" and value in ("-", "—", ""):
+
+    if field == "operation_type":
         doc = get_doc(doc_id) or {}
-        value = (doc.get("ocr_data") or {}).get("loading_date", {}).get("value", "")
-    update_field(doc_id, field, value)
+        ocr = doc.get("ocr_data") or {}
+        default_date = ocr.get("loading_date", {}).get("value", "")
+        EDIT_STATE[chat_id] = {"doc_id": doc_id, "field": "operation_date", "pending_op_type": value}
+        await context.bot.send_message(
+            chat_id,
+            f"📅 Введите дату для статуса '{value}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+        )
+        return
+
+    if field == "operation_date":
+        if value in ("-", "—", ""):
+            doc = get_doc(doc_id) or {}
+            value = (doc.get("ocr_data") or {}).get("loading_date", {}).get("value", "")
+        op_type = state.get("pending_op_type")
+        if not op_type:
+            doc = get_doc(doc_id) or {}
+            op_type = (doc.get("ocr_data") or {}).get("operation_type", {}).get("value")
+        add_operation_event(doc_id, op_type, value)
+    else:
+        update_field(doc_id, field, value)
 
     doc = get_doc(doc_id)
     ocr = doc.get("ocr_data") or {}

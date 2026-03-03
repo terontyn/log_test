@@ -5,31 +5,49 @@ def _g(d, *path, default="—"):
     return cur if cur not in (None, "") else default
 
 
-def format_for_driver(doc_id: int, data: dict, ok: bool, reason: str, conf: float) -> str:
-    addr = _g(data, "sender_address", "value")
-    load_date = _g(data, "loading_date", "value")
-    status_date = _g(data, "operation_date", "value", default=load_date if load_date != "—" else "—")
-    driver = _g(data, "driver_name", "value")
-    kg = _g(data, "weight_total", "kg")
-    prod = _g(data, "product_type", "value")
-
-    carrier = _g(data, "carrier_name", "value")
-    unload = _g(data, "unloading_address", "value")
-    op_type = _g(data, "operation_type", "value")
-
+def _status_label(op_type):
     status_map = {
         "loading": "⬆️ Загрузился",
         "unloading": "⬇️ Выгрузился",
         "filling": "⛽ Залился",
         "draining": "💧 Слился",
     }
-
     if op_type in status_map:
-        op_str = f"{status_map[op_type]} ({status_date})"
-    elif op_type and op_type != "—":
-        op_str = f"📝 {op_type} ({status_date})"
-    else:
-        op_str = "—"
+        return status_map[op_type]
+    return f"📝 {op_type}" if op_type and op_type != "—" else "—"
+
+
+def _format_statuses(data, fallback_date):
+    events = data.get("operation_events") if isinstance(data, dict) else None
+    if isinstance(events, list) and events:
+        chunks = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            label = _status_label(e.get("type"))
+            date = e.get("date") or fallback_date
+            chunks.append(f"{label} ({date})")
+        if chunks:
+            return " | ".join(chunks)
+
+    op_type = _g(data, "operation_type", "value")
+    status_date = _g(data, "operation_date", "value", default=fallback_date)
+    label = _status_label(op_type)
+    if label == "—":
+        return "—"
+    return f"{label} ({status_date})"
+
+
+def format_for_driver(doc_id: int, data: dict, ok: bool, reason: str, conf: float) -> str:
+    addr = _g(data, "sender_address", "value")
+    load_date = _g(data, "loading_date", "value")
+    driver = _g(data, "driver_name", "value")
+    kg = _g(data, "weight_total", "kg")
+    prod = _g(data, "product_type", "value")
+    carrier = _g(data, "carrier_name", "value")
+    unload = _g(data, "unloading_address", "value")
+
+    op_str = _format_statuses(data or {}, load_date if load_date != "—" else "—")
 
     lines = [f"📄 **Накладная #{doc_id}**", ""]
     lines.append(f"Грузоотправитель: {addr}")
