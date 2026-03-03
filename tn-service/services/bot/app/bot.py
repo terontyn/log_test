@@ -43,14 +43,20 @@ def _suggest_values(doc_id, field):
             out.append(v)
     return out
 
+
+def _build_suggested_rows(doc_id, field, prefix, emoji):
+    suggestions = _suggest_values(doc_id, field)
+    rows = []
+    for idx, value in enumerate(suggestions):
+        rows.append([InlineKeyboardButton(f"{emoji} {value}", callback_data=f"{prefix}:{doc_id}:{idx}")])
+    return rows
+
 def build_main_kb(doc_id, missing_carrier):
     kb = [
         [InlineKeyboardButton("🔄 Статус / Операция", callback_data=f"menu_op:{doc_id}")],
         [InlineKeyboardButton("📍 Локация выгрузки", callback_data=f"menu_unload:{doc_id}")],
         [InlineKeyboardButton("🚚 Перевозчик", callback_data=f"menu_carrier:{doc_id}")],
     ]
-    if missing_carrier:
-        kb.append([InlineKeyboardButton("🚚 Ввести перевозчика", callback_data=f"menu_carrier:{doc_id}")])
     kb.append([InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok:{doc_id}")])
     kb.append([InlineKeyboardButton("✏️ Исправить", callback_data=f"edit:{doc_id}")])
     kb.append([InlineKeyboardButton("📸 Переснять", callback_data=f"reshoot:{doc_id}")])
@@ -75,16 +81,14 @@ def build_op_kb(doc_id):
 
 
 def build_unload_kb(doc_id):
-    suggestions = _suggest_values(doc_id, "unloading_address")
-    rows = [[InlineKeyboardButton(f"📍 {x}", callback_data=f"set_unload:{doc_id}:{x}")] for x in suggestions]
+    rows = _build_suggested_rows(doc_id, "unloading_address", "set_unload", "📍")
     rows.append([InlineKeyboardButton("✍️ Свой вариант", callback_data=f"field:{doc_id}:unloading_address")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")])
     return InlineKeyboardMarkup(rows)
 
 
 def build_carrier_kb(doc_id):
-    suggestions = _suggest_values(doc_id, "carrier_name")
-    rows = [[InlineKeyboardButton(f"🚚 {x}", callback_data=f"set_carrier:{doc_id}:{x}")] for x in suggestions]
+    rows = _build_suggested_rows(doc_id, "carrier_name", "set_carrier", "🚚")
     rows.append([InlineKeyboardButton("✍️ Свой вариант", callback_data=f"field:{doc_id}:carrier_name")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")])
     return InlineKeyboardMarkup(rows)
@@ -155,8 +159,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, "👇 Выберите наименование перевозчика или введите своё:", reply_markup=build_carrier_kb(doc_id))
 
     elif data.startswith("set_unload:"):
-        _, did, value = data.split(":", 2)
+        _, did, raw_idx = data.split(":", 2)
         doc_id = int(did)
+        suggestions = _suggest_values(doc_id, "unloading_address")
+        try:
+            value = suggestions[int(raw_idx)]
+        except (ValueError, IndexError):
+            await context.bot.send_message(chat_id, "⚠️ Не удалось выбрать вариант. Нажмите кнопку ещё раз.")
+            return
         update_field(doc_id, "unloading_address", value)
         doc = get_doc(doc_id) or {}
         ocr = doc.get("ocr_data") or {}
@@ -165,8 +175,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, msg, reply_markup=build_main_kb(doc_id, miss))
 
     elif data.startswith("set_carrier:"):
-        _, did, value = data.split(":", 2)
+        _, did, raw_idx = data.split(":", 2)
         doc_id = int(did)
+        suggestions = _suggest_values(doc_id, "carrier_name")
+        try:
+            value = suggestions[int(raw_idx)]
+        except (ValueError, IndexError):
+            await context.bot.send_message(chat_id, "⚠️ Не удалось выбрать вариант. Нажмите кнопку ещё раз.")
+            return
         update_field(doc_id, "carrier_name", value)
         doc = get_doc(doc_id) or {}
         ocr = doc.get("ocr_data") or {}
