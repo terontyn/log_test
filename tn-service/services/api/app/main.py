@@ -212,9 +212,16 @@ def _set_edit_state(chat_id, doc_id, field, original_mid, prompt_text, pending_o
     }
 
 
-def _render_doc(doc_id, mid):
+def _show_message(chat_id, mid, text, reply_markup):
+    if mid:
+        edit_max_message(mid, text, reply_markup=reply_markup)
+    else:
+        send_max_message(chat_id, text, reply_markup=reply_markup)
+
+
+def _render_doc(chat_id, doc_id, mid):
     doc = get_doc(doc_id) or {}
-    edit_max_message(mid, format_for_driver(doc_id, doc.get("ocr_data", {}), True, "", 1.0), reply_markup=build_main_kb(doc_id))
+    _show_message(chat_id, mid, format_for_driver(doc_id, doc.get("ocr_data", {}), True, "", 1.0), build_main_kb(doc_id))
 
 
 def handle_callback(chat_id, data, callback_id, mid):
@@ -222,7 +229,27 @@ def handle_callback(chat_id, data, callback_id, mid):
 
     if data.startswith("menu_op:"):
         doc_id = int(data.split(":")[1])
-        edit_max_message(mid, "👇 Что именно произошло?", reply_markup=build_op_kb(doc_id))
+        _show_message(chat_id, mid, "👇 Что именно произошло?", build_op_kb(doc_id))
+
+    elif data.startswith("menu_unload:"):
+        doc_id = int(data.split(":")[1])
+        _show_message(chat_id, mid, "👇 Выберите локацию выгрузки или введите свою:", build_unload_kb(doc_id))
+
+    elif data.startswith("menu_carrier:"):
+        doc_id = int(data.split(":")[1])
+        _show_message(chat_id, mid, "👇 Выберите наименование перевозчика или введите своё:", build_carrier_kb(doc_id))
+
+    elif data.startswith("set_unload:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "unloading_address", value)
+        _render_doc(chat_id, doc_id, mid)
+
+    elif data.startswith("set_carrier:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "carrier_name", value)
+        _render_doc(chat_id, doc_id, mid)
 
     elif data.startswith("menu_unload:"):
         doc_id = int(data.split(":")[1])
@@ -262,16 +289,16 @@ def handle_callback(chat_id, data, callback_id, mid):
     elif data.startswith("rm_last_op:"):
         doc_id = int(data.split(":")[1])
         remove_last_operation_event(doc_id)
-        _render_doc(doc_id, mid)
+        _render_doc(chat_id, doc_id, mid)
 
     elif data.startswith("clear_ops:"):
         doc_id = int(data.split(":")[1])
         clear_operation_events(doc_id)
-        _render_doc(doc_id, mid)
+        _render_doc(chat_id, doc_id, mid)
 
     elif data.startswith("edit:"):
         doc_id = int(data.split(":")[1])
-        edit_max_message(mid, "🛠 **Выберите поле для исправления:**", reply_markup=build_edit_kb(doc_id))
+        _show_message(chat_id, mid, "🛠 **Выберите поле для исправления:**", build_edit_kb(doc_id))
 
     elif data.startswith("field:"):
         _, did, field = data.split(":")
@@ -287,7 +314,7 @@ def handle_callback(chat_id, data, callback_id, mid):
 
     elif data.startswith("back:"):
         doc_id = int(data.split(":")[1])
-        _render_doc(doc_id, mid)
+        _render_doc(chat_id, doc_id, mid)
 
     elif data.startswith("ok:"):
         doc_id = int(data.split(":")[1])

@@ -5,6 +5,18 @@ def _g(d, *path, default="—"):
     return cur if cur not in (None, "") else default
 
 
+def _short_name(full_name):
+    if not full_name or full_name == "—":
+        return "—"
+    text = str(full_name).strip()
+    parts = [x for x in text.replace(".", " ").split() if x]
+    if len(parts) < 2:
+        return text
+    surname = parts[0]
+    initials = " ".join([f"{p[0].upper()}." for p in parts[1:] if p])
+    return f"{surname} {initials}".strip()
+
+
 def _status_label(op_type):
     status_map = {
         "loading": "⬆️ Загрузился",
@@ -41,7 +53,7 @@ def _format_statuses(data, fallback_date):
 def format_for_driver(doc_id: int, data: dict, ok: bool, reason: str, conf: float) -> str:
     addr = _g(data, "sender_address", "value")
     load_date = _g(data, "loading_date", "value")
-    driver = _g(data, "driver_name", "value")
+    driver = _short_name(_g(data, "driver_name", "value"))
     kg = _g(data, "weight_total", "kg")
     prod = _g(data, "product_type", "value")
     carrier = _g(data, "carrier_name", "value")
