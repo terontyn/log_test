@@ -4,6 +4,8 @@ from PIL import Image, ImageFilter, ImageStat
 from openai import OpenAI
 
 MODEL_VISION = os.getenv("OPENAI_OCR_MODEL", "gpt-5.2")
+MIN_ENTROPY = float(os.getenv("OCR_MIN_ENTROPY", "2.2"))
+MIN_EDGE_MEAN = float(os.getenv("OCR_MIN_EDGE_MEAN", "9.0"))
 
 USER_PROMPT = """Ты — логистический ИИ-ассистент, эксперт по распознаванию российских транспортных накладных (ТН) и товарно-транспортных накладных (ТТН).
 Внимательно изучи приложенные изображения. Твоя главная задача — точно определить "Грузоотправителя", не перепутав его с Поставщиком, Плательщиком или Грузополучателем.
@@ -43,31 +45,46 @@ def _signal_metrics(path: str) -> Tuple[float, float]:
 
 
 def select_images_for_ocr(image_paths: List[str]) -> List[str]:
+    total_input = len(image_paths)
     valid_paths = [p for p in image_paths if p and os.path.exists(p)]
+    invalid_count = total_input - len(valid_paths)
+
+    print(
+        f"🧾 [OCR] Статистика входа: всего={total_input}, валидных={len(valid_paths)}, невалидных={invalid_count}, "
+        f"порог entropy>={MIN_ENTROPY}, edges>={MIN_EDGE_MEAN}"
+    )
+
     if not valid_paths:
         return []
 
     likely_doc = []
     rejected = []
+
     for p in valid_paths:
         try:
             entropy, edge_mean = _signal_metrics(p)
-            if entropy >= 2.2 or edge_mean >= 9.0:
-                likely_doc.append(p)
+            if entropy >= MIN_ENTROPY or edge_mean >= MIN_EDGE_MEAN:
+                likely_doc.append((p, entropy, edge_mean))
             else:
                 rejected.append((p, entropy, edge_mean))
         except Exception:
             rejected.append((p, 0.0, 0.0))
 
     if likely_doc:
+        print(
+            f"🧾 [OCR] Отбор: отправим={len(likely_doc)}, пропустим={len(rejected)}, "
+            f"валидных={len(valid_paths)}"
+        )
         if rejected:
             print("🧹 [OCR] Пропущены фото с низким текстовым сигналом:")
             for path, entropy, edge_mean in rejected:
                 print(f"  - {path}: entropy={entropy:.2f}, edges={edge_mean:.2f}")
-        print(f"🧹 [OCR] На OCR отправляем {len(likely_doc)}/{len(valid_paths)} изображений")
-        return likely_doc
+        return [p for p, _, _ in likely_doc]
 
-    print("⚠️ [OCR] Не нашли явно документные фото, отправляем все валидные изображения (fallback).")
+    print(
+        "⚠️ [OCR] Документные фото не определены по эвристике; fallback: отправляем все валидные "
+        f"({len(valid_paths)}/{total_input})."
+    )
     return valid_paths
 
 
@@ -76,17 +93,20 @@ def extract_batch(image_paths: List[str]) -> Dict[str, Any]:
     if not selected_paths:
         raise RuntimeError("Не найдено ни одного валидного изображения для OCR")
 
-    print(f"🧠 [OCR] Инициализация модели {MODEL_VISION} для {len(selected_paths)} изображений...")
+    skipped = len(image_paths) - len(selected_paths)
+    print(f"🧠 [OCR] К отправке в OpenAI: {len(selected_paths)} шт.; пропущено: {skipped} шт.")
+    print(f"🧠 [OCR] Инициализация модели {MODEL_VISION}...")
+
     client = OpenAI()
     content = [{"type": "text", "text": USER_PROMPT}]
 
     for i, p in enumerate(selected_paths, 1):
-        print(f"🧠 [OCR] Кодирование изображения {i}/{len(selected_paths)} в Base64: {p}")
+        print(f"🧠 [OCR] Кодирование изображения {i}/{len(selected_paths)}: {p}")
         with open(p, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("ascii")
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
 
-    print("🧠 [OCR] Отправка запроса к серверам OpenAI API...")
+    print("🧠 [OCR] Отправка запроса к OpenAI API...")
     resp = client.chat.completions.create(
         model=MODEL_VISION,
         messages=[{"role": "user", "content": content}],
@@ -94,7 +114,7 @@ def extract_batch(image_paths: List[str]) -> Dict[str, Any]:
         temperature=0.0,
     )
 
-    print("🧠 [OCR] Ответ успешно получен! Разбор JSON...")
+    print("🧠 [OCR] Ответ получен, разбор JSON...")
     result = json.loads(resp.choices[0].message.content)
     print(f"🧠 [OCR] Финальный вердикт ИИ:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
     return result
