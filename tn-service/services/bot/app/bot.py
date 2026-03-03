@@ -50,7 +50,7 @@ def build_edit_kb(doc_id):
         [InlineKeyboardButton("ФИО водителя", callback_data=f"field:{doc_id}:driver_name")],
         [InlineKeyboardButton("Вес (кг)", callback_data=f"field:{doc_id}:weight_kg")],
         [InlineKeyboardButton("Вид продукции", callback_data=f"field:{doc_id}:product_type")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")]
+        [InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")],
     ])
 
 
@@ -101,12 +101,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, did, op = data.split(":")
         doc_id = int(did)
         update_field(doc_id, "operation_type", op)
-        doc = get_doc(doc_id)
-        if doc:
-            ocr = doc.get("ocr_data") or {}
-            miss = not ocr.get("carrier_name", {}).get("value")
-            msg = format_for_driver(doc_id, ocr, True, "", 1.0)
-            await context.bot.send_message(chat_id, msg, reply_markup=build_main_kb(doc_id, miss))
+        doc = get_doc(doc_id) or {}
+        ocr = doc.get("ocr_data") or {}
+        default_date = ocr.get("loading_date", {}).get("value", "")
+        EDIT_STATE[chat_id] = {"doc_id": doc_id, "field": "operation_date"}
+        await context.bot.send_message(
+            chat_id,
+            f"📅 Введите дату статуса (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+        )
 
     elif data.startswith("edit:"):
         doc_id = int(data.split(":")[1])
@@ -133,6 +135,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "sender_address": "🏭 Введите Грузоотправителя:",
             "loading_date": "📅 Введите Дату (ДД.ММ.ГГГГ):",
             "operation_type": "✍️ Напишите свой статус:",
+            "operation_date": "📅 Введите дату статуса (ДД.ММ.ГГГГ):",
         }
         await context.bot.send_message(chat_id, prompt_map.get(field, "Введите новое значение:"))
 
@@ -144,7 +147,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     doc_id, field = state["doc_id"], state["field"]
-    update_field(doc_id, field, update.message.text.strip())
+    value = update.message.text.strip()
+    if field == "operation_date" and value in ("-", "—", ""):
+        doc = get_doc(doc_id) or {}
+        value = (doc.get("ocr_data") or {}).get("loading_date", {}).get("value", "")
+    update_field(doc_id, field, value)
 
     doc = get_doc(doc_id)
     ocr = doc.get("ocr_data") or {}
