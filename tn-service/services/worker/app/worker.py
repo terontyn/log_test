@@ -55,7 +55,9 @@ def main():
                 "unloading_address": (data.get("unloading_address") or {}).get("value"),
             }
 
-            # Статус водитель выбирает вручную; carrier/unloading оставляем как распознано OCR
+            # До подтверждения водителем обязательные поля не считаются заполненными.
+            data["carrier_name"] = {"value": None}
+            data["unloading_address"] = {"value": None}
             data["operation_type"] = {"value": None}
 
             doc_id = insert_received(chat_id, ",".join(files), ",".join(paths))
