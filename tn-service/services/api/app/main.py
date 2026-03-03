@@ -251,6 +251,26 @@ def handle_callback(chat_id, data, callback_id, mid):
         update_field(doc_id, "carrier_name", value)
         _render_doc(chat_id, doc_id, mid)
 
+    elif data.startswith("menu_unload:"):
+        doc_id = int(data.split(":")[1])
+        edit_max_message(mid, "👇 Выберите локацию выгрузки или введите свою:", reply_markup=build_unload_kb(doc_id))
+
+    elif data.startswith("menu_carrier:"):
+        doc_id = int(data.split(":")[1])
+        edit_max_message(mid, "👇 Выберите наименование перевозчика или введите своё:", reply_markup=build_carrier_kb(doc_id))
+
+    elif data.startswith("set_unload:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "unloading_address", value)
+        _render_doc(doc_id, mid)
+
+    elif data.startswith("set_carrier:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "carrier_name", value)
+        _render_doc(doc_id, mid)
+
     elif data.startswith("set_op:"):
         _, did, op = data.split(":")
         doc_id = int(did)
