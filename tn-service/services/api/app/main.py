@@ -11,6 +11,9 @@ MAX_TOKEN = os.getenv("MAX_BOT_TOKEN")
 HEADERS = {"Authorization": f"{MAX_TOKEN}"}
 EDIT_STATE = {}
 
+UNLOAD_SUGGESTIONS = [x.strip() for x in os.getenv("UNLOAD_SUGGESTIONS", "Нефтебаза,АЗС,Склад клиента").split(",") if x.strip()]
+CARRIER_SUGGESTIONS = [x.strip() for x in os.getenv("CARRIER_SUGGESTIONS", "ИП,ООО,АО").split(",") if x.strip()]
+
 FILE_BUFFER = {}
 BUFFER_LOCK = threading.Lock()
 
@@ -123,8 +126,8 @@ def answer_max_callback(callback_id):
 def build_main_kb(doc_id):
     return {"inline_keyboard": [
         [{"text": "🔄 Статус / Операция", "callback_data": f"menu_op:{doc_id}"}],
-        [{"text": "📍 Локация выгрузки", "callback_data": f"field:{doc_id}:unloading_address"}],
-        [{"text": "🚚 Перевозчик", "callback_data": f"field:{doc_id}:carrier_name"}],
+        [{"text": "📍 Локация выгрузки", "callback_data": f"menu_unload:{doc_id}"}],
+        [{"text": "🚚 Перевозчик", "callback_data": f"menu_carrier:{doc_id}"}],
         [{"text": "✅ Подтвердить", "callback_data": f"ok:{doc_id}"}],
         [{"text": "✏️ Исправить", "callback_data": f"edit:{doc_id}"}],
     ]}
@@ -141,10 +144,24 @@ def build_op_kb(doc_id):
     ]}
 
 
+def build_unload_kb(doc_id):
+    rows = [[{"text": f"📍 {x}", "callback_data": f"set_unload:{doc_id}:{x}"}] for x in UNLOAD_SUGGESTIONS]
+    rows.append([{"text": "✍️ Свой вариант", "callback_data": f"field:{doc_id}:unloading_address"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": f"back:{doc_id}"}])
+    return {"inline_keyboard": rows}
+
+
+def build_carrier_kb(doc_id):
+    rows = [[{"text": f"🚚 {x}", "callback_data": f"set_carrier:{doc_id}:{x}"}] for x in CARRIER_SUGGESTIONS]
+    rows.append([{"text": "✍️ Свой вариант", "callback_data": f"field:{doc_id}:carrier_name"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": f"back:{doc_id}"}])
+    return {"inline_keyboard": rows}
+
+
 def build_edit_kb(doc_id):
     return {"inline_keyboard": [
-        [{"text": "📍 Локация выгрузки", "callback_data": f"field:{doc_id}:unloading_address"}],
-        [{"text": "🚚 Перевозчик", "callback_data": f"field:{doc_id}:carrier_name"}],
+        [{"text": "📍 Локация выгрузки", "callback_data": f"menu_unload:{doc_id}"}],
+        [{"text": "🚚 Перевозчик", "callback_data": f"menu_carrier:{doc_id}"}],
         [{"text": "🏭 Грузоотправитель", "callback_data": f"field:{doc_id}:sender_address"}],
         [{"text": "👤 Водитель", "callback_data": f"field:{doc_id}:driver_name"}],
         [{"text": "📅 Дата погрузки", "callback_data": f"field:{doc_id}:loading_date"}],
@@ -180,6 +197,26 @@ def handle_callback(chat_id, data, callback_id, mid):
         doc_id = int(data.split(":")[1])
         edit_max_message(mid, "👇 Что именно произошло?", reply_markup=build_op_kb(doc_id))
 
+    elif data.startswith("menu_unload:"):
+        doc_id = int(data.split(":")[1])
+        edit_max_message(mid, "👇 Выберите локацию выгрузки или введите свою:", reply_markup=build_unload_kb(doc_id))
+
+    elif data.startswith("menu_carrier:"):
+        doc_id = int(data.split(":")[1])
+        edit_max_message(mid, "👇 Выберите наименование перевозчика или введите своё:", reply_markup=build_carrier_kb(doc_id))
+
+    elif data.startswith("set_unload:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "unloading_address", value)
+        _render_doc(doc_id, mid)
+
+    elif data.startswith("set_carrier:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "carrier_name", value)
+        _render_doc(doc_id, mid)
+
     elif data.startswith("set_op:"):
         _, did, op = data.split(":")
         doc_id = int(did)
@@ -191,7 +228,7 @@ def handle_callback(chat_id, data, callback_id, mid):
             doc_id,
             "operation_date",
             mid,
-            f"📅 Введите дату для статуса '{op}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+            f"📅 Введите дату для статуса '{op}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '+' чтобы оставить дату погрузки.",
             pending_op_type=op,
         )
 
@@ -279,14 +316,14 @@ def process_update(update):
                 doc_id,
                 "operation_date",
                 state.get("original_mid"),
-                f"📅 Введите дату для статуса '{value}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+                f"📅 Введите дату для статуса '{value}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '+' чтобы оставить дату погрузки.",
                 pending_op_type=value,
             )
             delete_max_message(msg_obj.get("body", {}).get("mid"))
             return
 
         if field == "operation_date":
-            if value in ("-", "—", ""):
+            if value in ("+", "＋", ""):
                 doc = get_doc(doc_id) or {}
                 value = (doc.get("ocr_data") or {}).get("loading_date", {}).get("value", "")
             latest_doc = get_doc(doc_id) or {}

@@ -9,6 +9,9 @@ logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 rds = redis.Redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
 
+UNLOAD_SUGGESTIONS = [x.strip() for x in os.getenv("UNLOAD_SUGGESTIONS", "Нефтебаза,АЗС,Склад клиента").split(",") if x.strip()]
+CARRIER_SUGGESTIONS = [x.strip() for x in os.getenv("CARRIER_SUGGESTIONS", "ИП,ООО,АО").split(",") if x.strip()]
+
 CHAT_BUFFERS = {}
 EDIT_STATE = {}
 
@@ -16,10 +19,11 @@ EDIT_STATE = {}
 def build_main_kb(doc_id, missing_carrier):
     kb = [
         [InlineKeyboardButton("🔄 Статус / Операция", callback_data=f"menu_op:{doc_id}")],
-        [InlineKeyboardButton("📍 Локация выгрузки", callback_data=f"field:{doc_id}:unloading_address")],
+        [InlineKeyboardButton("📍 Локация выгрузки", callback_data=f"menu_unload:{doc_id}")],
+        [InlineKeyboardButton("🚚 Перевозчик", callback_data=f"menu_carrier:{doc_id}")],
     ]
     if missing_carrier:
-        kb.append([InlineKeyboardButton("🚚 Ввести перевозчика", callback_data=f"field:{doc_id}:carrier_name")])
+        kb.append([InlineKeyboardButton("🚚 Ввести перевозчика", callback_data=f"menu_carrier:{doc_id}")])
     kb.append([InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok:{doc_id}")])
     kb.append([InlineKeyboardButton("✏️ Исправить", callback_data=f"edit:{doc_id}")])
     kb.append([InlineKeyboardButton("📸 Переснять", callback_data=f"reshoot:{doc_id}")])
@@ -43,10 +47,24 @@ def build_op_kb(doc_id):
     ])
 
 
+def build_unload_kb(doc_id):
+    rows = [[InlineKeyboardButton(f"📍 {x}", callback_data=f"set_unload:{doc_id}:{x}")] for x in UNLOAD_SUGGESTIONS]
+    rows.append([InlineKeyboardButton("✍️ Свой вариант", callback_data=f"field:{doc_id}:unloading_address")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_carrier_kb(doc_id):
+    rows = [[InlineKeyboardButton(f"🚚 {x}", callback_data=f"set_carrier:{doc_id}:{x}")] for x in CARRIER_SUGGESTIONS]
+    rows.append([InlineKeyboardButton("✍️ Свой вариант", callback_data=f"field:{doc_id}:carrier_name")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"back:{doc_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
 def build_edit_kb(doc_id):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Локация выгрузки", callback_data=f"field:{doc_id}:unloading_address")],
-        [InlineKeyboardButton("Наименование перевозчика", callback_data=f"field:{doc_id}:carrier_name")],
+        [InlineKeyboardButton("Локация выгрузки", callback_data=f"menu_unload:{doc_id}")],
+        [InlineKeyboardButton("Наименование перевозчика", callback_data=f"menu_carrier:{doc_id}")],
         [InlineKeyboardButton("Грузоотправитель", callback_data=f"field:{doc_id}:sender_address")],
         [InlineKeyboardButton("Дата погрузки", callback_data=f"field:{doc_id}:loading_date")],
         [InlineKeyboardButton("ФИО водителя", callback_data=f"field:{doc_id}:driver_name")],
@@ -99,6 +117,34 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         doc_id = int(data.split(":")[1])
         await context.bot.send_message(chat_id, "👇 Что именно произошло?", reply_markup=build_op_kb(doc_id))
 
+    elif data.startswith("menu_unload:"):
+        doc_id = int(data.split(":")[1])
+        await context.bot.send_message(chat_id, "👇 Выберите локацию выгрузки или введите свою:", reply_markup=build_unload_kb(doc_id))
+
+    elif data.startswith("menu_carrier:"):
+        doc_id = int(data.split(":")[1])
+        await context.bot.send_message(chat_id, "👇 Выберите наименование перевозчика или введите своё:", reply_markup=build_carrier_kb(doc_id))
+
+    elif data.startswith("set_unload:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "unloading_address", value)
+        doc = get_doc(doc_id) or {}
+        ocr = doc.get("ocr_data") or {}
+        miss = not ocr.get("carrier_name", {}).get("value")
+        msg = format_for_driver(doc_id, ocr, True, "", 1.0)
+        await context.bot.send_message(chat_id, msg, reply_markup=build_main_kb(doc_id, miss))
+
+    elif data.startswith("set_carrier:"):
+        _, did, value = data.split(":", 2)
+        doc_id = int(did)
+        update_field(doc_id, "carrier_name", value)
+        doc = get_doc(doc_id) or {}
+        ocr = doc.get("ocr_data") or {}
+        miss = not ocr.get("carrier_name", {}).get("value")
+        msg = format_for_driver(doc_id, ocr, True, "", 1.0)
+        await context.bot.send_message(chat_id, msg, reply_markup=build_main_kb(doc_id, miss))
+
     elif data.startswith("set_op:"):
         _, did, op = data.split(":")
         doc_id = int(did)
@@ -108,7 +154,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         EDIT_STATE[chat_id] = {"doc_id": doc_id, "field": "operation_date", "pending_op_type": op}
         await context.bot.send_message(
             chat_id,
-            f"📅 Введите дату для статуса '{op}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+            f"📅 Введите дату для статуса '{op}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '+' чтобы оставить дату погрузки.",
         )
 
     elif data.startswith("rm_last_op:"):
@@ -175,12 +221,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         EDIT_STATE[chat_id] = {"doc_id": doc_id, "field": "operation_date", "pending_op_type": value}
         await context.bot.send_message(
             chat_id,
-            f"📅 Введите дату для статуса '{value}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '-' чтобы оставить дату погрузки.",
+            f"📅 Введите дату для статуса '{value}' (ДД.ММ.ГГГГ).\nПо умолчанию: {default_date or '—'}\nОтправьте '+' чтобы оставить дату погрузки.",
         )
         return
 
     if field == "operation_date":
-        if value in ("-", "—", ""):
+        if value in ("+", "＋", ""):
             doc = get_doc(doc_id) or {}
             value = (doc.get("ocr_data") or {}).get("loading_date", {}).get("value", "")
         op_type = state.get("pending_op_type")
