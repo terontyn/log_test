@@ -1,8 +1,8 @@
 import base64, json, os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
+from PIL import Image, ImageFilter, ImageStat
 from openai import OpenAI
 
-# Переходим на GPT-5.2 согласно обязательному обновлению OpenAI
 MODEL_VISION = os.getenv("OPENAI_OCR_MODEL", "gpt-5.2")
 
 USER_PROMPT = """Ты — логистический ИИ-ассистент, эксперт по распознаванию российских транспортных накладных (ТН) и товарно-транспортных накладных (ТТН).
@@ -32,26 +32,69 @@ USER_PROMPT = """Ты — логистический ИИ-ассистент, э
 }
 """
 
+
+def _signal_metrics(path: str) -> Tuple[float, float]:
+    with Image.open(path) as img:
+        gray = img.convert("L")
+        entropy = gray.entropy()
+        edge_img = gray.filter(ImageFilter.FIND_EDGES)
+        edge_mean = ImageStat.Stat(edge_img).mean[0]
+        return entropy, edge_mean
+
+
+def select_images_for_ocr(image_paths: List[str]) -> List[str]:
+    valid_paths = [p for p in image_paths if p and os.path.exists(p)]
+    if not valid_paths:
+        return []
+
+    likely_doc = []
+    rejected = []
+    for p in valid_paths:
+        try:
+            entropy, edge_mean = _signal_metrics(p)
+            if entropy >= 2.2 or edge_mean >= 9.0:
+                likely_doc.append(p)
+            else:
+                rejected.append((p, entropy, edge_mean))
+        except Exception:
+            rejected.append((p, 0.0, 0.0))
+
+    if likely_doc:
+        if rejected:
+            print("🧹 [OCR] Пропущены фото с низким текстовым сигналом:")
+            for path, entropy, edge_mean in rejected:
+                print(f"  - {path}: entropy={entropy:.2f}, edges={edge_mean:.2f}")
+        print(f"🧹 [OCR] На OCR отправляем {len(likely_doc)}/{len(valid_paths)} изображений")
+        return likely_doc
+
+    print("⚠️ [OCR] Не нашли явно документные фото, отправляем все валидные изображения (fallback).")
+    return valid_paths
+
+
 def extract_batch(image_paths: List[str]) -> Dict[str, Any]:
-    print(f"🧠 [OCR] Инициализация модели {MODEL_VISION} для {len(image_paths)} изображений...")
+    selected_paths = select_images_for_ocr(image_paths)
+    if not selected_paths:
+        raise RuntimeError("Не найдено ни одного валидного изображения для OCR")
+
+    print(f"🧠 [OCR] Инициализация модели {MODEL_VISION} для {len(selected_paths)} изображений...")
     client = OpenAI()
     content = [{"type": "text", "text": USER_PROMPT}]
-    
-    for i, p in enumerate(image_paths, 1):
-        print(f"🧠 [OCR] Кодирование изображения {i}/{len(image_paths)} в Base64: {p}")
+
+    for i, p in enumerate(selected_paths, 1):
+        print(f"🧠 [OCR] Кодирование изображения {i}/{len(selected_paths)} в Base64: {p}")
         with open(p, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("ascii")
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-    
-    print(f"🧠 [OCR] Отправка запроса к серверам OpenAI API...")
+
+    print("🧠 [OCR] Отправка запроса к серверам OpenAI API...")
     resp = client.chat.completions.create(
         model=MODEL_VISION,
         messages=[{"role": "user", "content": content}],
         response_format={"type": "json_object"},
-        temperature=0.0  # Убираем галлюцинации
+        temperature=0.0,
     )
-    
-    print(f"🧠 [OCR] Ответ успешно получен! Разбор JSON...")
+
+    print("🧠 [OCR] Ответ успешно получен! Разбор JSON...")
     result = json.loads(resp.choices[0].message.content)
     print(f"🧠 [OCR] Финальный вердикт ИИ:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
     return result
