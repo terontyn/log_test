@@ -9,6 +9,9 @@ logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 rds = redis.Redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
 
+UNLOAD_SUGGESTIONS = [x.strip() for x in os.getenv("UNLOAD_SUGGESTIONS", "Нефтебаза,АЗС,Склад клиента").split(",") if x.strip()]
+CARRIER_SUGGESTIONS = [x.strip() for x in os.getenv("CARRIER_SUGGESTIONS", "ИП,ООО,АО").split(",") if x.strip()]
+
 CHAT_BUFFERS = {}
 EDIT_STATE = {}
 
